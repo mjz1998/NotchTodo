@@ -77,6 +77,25 @@ struct ClickUpAPI {
         return all
     }
 
+    /// 工作区下所有未归档的清单：空间 → 文件夹 → 清单，以及空间下不在文件夹里的清单
+    func allLists(teamId: String) async throws -> [ListOption] {
+        let notArchived = [URLQueryItem(name: "archived", value: "false")]
+        let spaces: SpacesResponse = try await get("/team/\(teamId)/space", query: notArchived)
+        var result: [ListOption] = []
+        for space in spaces.spaces {
+            let loose: ListsResponse = try await get("/space/\(space.id)/list", query: notArchived)
+            result += loose.lists.map { ListOption(id: $0.id, name: $0.name, path: space.name) }
+
+            let folders: FoldersResponse = try await get("/space/\(space.id)/folder", query: notArchived)
+            for folder in folders.folders {
+                result += (folder.lists ?? []).map {
+                    ListOption(id: $0.id, name: $0.name, path: "\(space.name) / \(folder.name)")
+                }
+            }
+        }
+        return result
+    }
+
     func listStatuses(listId: String) async throws -> [CUStatus] {
         let r: ListInfo = try await get("/list/\(listId)")
         return r.statuses

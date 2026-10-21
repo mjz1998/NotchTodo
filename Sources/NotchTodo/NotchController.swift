@@ -12,22 +12,37 @@ final class NotchPanel: NSPanel {
         hasShadow = false
         isMovable = false
         hidesOnDeactivate = false
-        level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 3) // 盖在菜单栏之上
+        level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 3)
         collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
     }
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
-    // 允许窗口放在菜单栏区域
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
+/// 界面状态。全部用 @Published，不依赖 SwiftUI 的 @State 宏。
 @MainActor
 final class NotchState: ObservableObject {
     @Published var expanded = false
     @Published var pinned = false
     @Published var showSettings = false
     @Published var notchSize = CGSize(width: 200, height: 32)
-    let expandedSize = CGSize(width: 460, height: 420)
+
+    @Published var newTaskName = ""
+    @Published var editingId: String?
+    @Published var pendingDeleteId: String?
+    @Published var draft = ""
+    @Published var hoveredId: String?
+    @Published var tokenInput = ""
+    @Published var saving = false
+
+    /// 折叠起来的分组（List ID），会记住
+    @Published var collapsedGroups: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "collapsedGroups") ?? []) {
+        didSet { UserDefaults.standard.set(Array(collapsedGroups), forKey: "collapsedGroups") }
+    }
+
+    let expandedSize = CGSize(width: 480, height: 460)
     var collapsedSize: CGSize { CGSize(width: notchSize.width + 84, height: notchSize.height) }
 }
 
@@ -51,12 +66,10 @@ final class NotchController {
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in Task { @MainActor in self?.layout() } }
 
-        // 轮询鼠标位置实现悬停展开/离开收起
         timer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
 
-        // 首次使用：直接展开设置页
         if !store.hasToken {
             state.showSettings = true
             state.pinned = true
@@ -64,7 +77,6 @@ final class NotchController {
         }
     }
 
-    /// 优先选带刘海的内建屏幕
     private var screen: NSScreen {
         NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main ?? NSScreen.screens[0]
     }
@@ -74,7 +86,6 @@ final class NotchController {
            let l = s.auxiliaryTopLeftArea, let r = s.auxiliaryTopRightArea {
             return CGSize(width: s.frame.width - l.width - r.width, height: s.safeAreaInsets.top)
         }
-        // 无刘海的屏幕：在菜单栏中间模拟一个
         return CGSize(width: 180, height: NSStatusBar.system.thickness)
     }
 
@@ -92,6 +103,11 @@ final class NotchController {
         return tv.isFieldEditor
     }
 
+    /// 弹出菜单（如分组选择、状态选择）期间不要收起
+    private var menuOpen: Bool {
+        RunLoop.current.currentMode == .eventTracking
+    }
+
     private func tick() {
         let p = NSEvent.mouseLocation
         let f = screen.frame
@@ -107,7 +123,7 @@ final class NotchController {
         let e = state.expandedSize
         let area = NSRect(x: f.midX - e.width / 2, y: f.maxY - e.height,
                           width: e.width, height: e.height + 2).insetBy(dx: -12, dy: -12)
-        if state.pinned || isEditing || area.contains(p) {
+        if state.pinned || isEditing || menuOpen || area.contains(p) {
             outsideSince = nil
             return
         }
@@ -121,15 +137,15 @@ final class NotchController {
     func expand() {
         panel.ignoresMouseEvents = false
         state.expanded = true
-        Task { await store.refresh() }
+        Task { @MainActor in await store.refresh() }
     }
 
     func collapse() {
         outsideSince = nil
         state.expanded = false
+        state.hoveredId = nil
         panel.ignoresMouseEvents = true
         if panel.isKeyWindow {
-            // 交还键盘焦点给原来的应用
             panel.makeFirstResponder(nil)
             panel.orderOut(nil)
             panel.orderFrontRegardless()

@@ -36,6 +36,32 @@ struct CUTask: Decodable, Identifiable, Hashable {
 struct TasksResponse: Decodable { let tasks: [CUTask]; let lastPage: Bool? }
 struct ListInfo: Decodable { let statuses: [CUStatus] }
 
+// MARK: - 空间 / 文件夹 / 清单（用于分组和新建时选择）
+
+struct CUSpace: Decodable { let id: String; let name: String }
+struct SpacesResponse: Decodable { let spaces: [CUSpace] }
+
+struct CUSimpleList: Decodable { let id: String; let name: String }
+struct ListsResponse: Decodable { let lists: [CUSimpleList] }
+
+struct CUFolder: Decodable { let id: String; let name: String; let lists: [CUSimpleList]? }
+struct FoldersResponse: Decodable { let folders: [CUFolder] }
+
+/// 一个可选的分组（ClickUp List），带完整路径用于显示
+struct ListOption: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let path: String        // 例如 “空间 / 文件夹”
+}
+
+/// 界面上的一个分组
+struct TaskGroup: Identifiable {
+    let id: String          // List ID
+    let name: String
+    let path: String
+    let tasks: [CUTask]
+}
+
 extension Color {
     init(hex: String?) {
         guard var s = hex?.trimmingCharacters(in: .whitespaces), !s.isEmpty else { self = .gray; return }

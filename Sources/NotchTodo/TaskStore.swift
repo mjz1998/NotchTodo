@@ -5,6 +5,7 @@ import SwiftUI
 final class TaskStore: ObservableObject {
     @Published var tasks: [CUTask] = []
     @Published var teams: [CUTeam] = []
+    @Published var lists: [ListOption] = []          // 工作区内全部清单（分组）
     @Published var statusesByList: [String: [CUStatus]] = [:]
     @Published var isLoading = false
     @Published var errorMessage: String?
@@ -13,8 +14,9 @@ final class TaskStore: ObservableObject {
     @Published var teamId: String {
         didSet { UserDefaults.standard.set(teamId, forKey: "teamId") }
     }
-    @Published var defaultListId: String {
-        didSet { UserDefaults.standard.set(defaultListId, forKey: "defaultListId") }
+    /// 新建任务时选中的分组，会记住上次的选择
+    @Published var createListId: String {
+        didSet { UserDefaults.standard.set(createListId, forKey: "defaultListId") }
     }
 
     private var api: ClickUpAPI?
@@ -24,21 +26,41 @@ final class TaskStore: ObservableObject {
 
     init() {
         teamId = UserDefaults.standard.string(forKey: "teamId") ?? ""
-        defaultListId = UserDefaults.standard.string(forKey: "defaultListId") ?? ""
+        createListId = UserDefaults.standard.string(forKey: "defaultListId") ?? ""
         if let t = Keychain.load(account: tokenAccount), !t.isEmpty {
             api = ClickUpAPI(token: t)
             hasToken = true
         }
-        Task { await bootstrap() }
-        // 每 60 秒自动刷新
+        Task { @MainActor in await self.bootstrap() }
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
         }
     }
 
+    // MARK: - 分组
+
+    /// 按清单分组；分组顺序按组内最早截止日期排列
+    var groups: [TaskGroup] {
+        var order: [String] = []
+        var buckets: [String: [CUTask]] = [:]
+        for t in tasks {
+            let key = t.list?.id ?? "_none"
+            if buckets[key] == nil { order.append(key) }
+            buckets[key, default: []].append(t)
+        }
+        return order.map { key in
+            let opt = lists.first { $0.id == key }
+            let name = opt?.name ?? buckets[key]?.first?.list?.name ?? "未分组"
+            return TaskGroup(id: key, name: name, path: opt?.path ?? "", tasks: buckets[key] ?? [])
+        }
+    }
+
+    var createListName: String {
+        lists.first { $0.id == createListId }?.name ?? "选择分组"
+    }
+
     // MARK: - 账户
 
-    /// 校验并保存 API Key，成功返回 true
     func saveToken(_ raw: String) async -> Bool {
         let token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else { return false }
@@ -61,7 +83,7 @@ final class TaskStore: ObservableObject {
     func signOut() {
         Keychain.delete(account: tokenAccount)
         api = nil; userId = nil; hasToken = false
-        tasks = []; teams = []; statusesByList = [:]
+        tasks = []; teams = []; lists = []; statusesByList = [:]
     }
 
     private func bootstrap() async {
@@ -72,9 +94,30 @@ final class TaskStore: ObservableObject {
             if teamId.isEmpty || !teams.contains(where: { $0.id == teamId }) {
                 teamId = teams.first?.id ?? ""
             }
+            await reloadLists()
             await refresh()
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// 切换工作区时调用
+    func switchTeam() async {
+        lists = []
+        tasks = []
+        await reloadLists()
+        await refresh()
+    }
+
+    func reloadLists() async {
+        guard let api, !teamId.isEmpty else { return }
+        do {
+            lists = try await api.allLists(teamId: teamId)
+            if !lists.contains(where: { $0.id == createListId }) {
+                createListId = lists.first?.id ?? ""
+            }
+        } catch {
+            errorMessage = "读取分组失败：\(error.localizedDescription)"
         }
     }
 
@@ -99,7 +142,6 @@ final class TaskStore: ObservableObject {
             switch (a.dueDateValue, b.dueDateValue) {
             case let (x?, y?): return x < y
             case (_?, nil):    return true
-            case (nil, _?):    return false
             default:           return false
             }
         }
@@ -125,7 +167,7 @@ final class TaskStore: ObservableObject {
         let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let api, !name.isEmpty, name != task.name,
               let idx = tasks.firstIndex(where: { $0.id == task.id }) else { return }
-        tasks[idx].name = name                       // 乐观更新
+        tasks[idx].name = name
         do { try await api.updateTask(task.id, fields: ["name": name]) }
         catch { errorMessage = error.localizedDescription; await refresh() }
     }
@@ -144,7 +186,6 @@ final class TaskStore: ObservableObject {
         }
     }
 
-    /// 勾选：切换到清单的完成状态；取消勾选：切回第一个 open 状态
     func toggleComplete(_ task: CUTask) async {
         guard let listId = task.list?.id else { return }
         let all = await statuses(for: listId)
@@ -158,18 +199,18 @@ final class TaskStore: ObservableObject {
         await setStatus(task, target)
     }
 
+    /// 在当前选中的分组中新建任务
     func create(_ rawName: String) async {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let api, !name.isEmpty else { return }
-        let listId = defaultListId.isEmpty ? (tasks.first?.list?.id ?? "") : defaultListId
-        guard !listId.isEmpty else {
-            errorMessage = "请先在设置中填写默认 List ID"
+        guard !createListId.isEmpty else {
+            errorMessage = "请先选择要添加到的分组"
             return
         }
         do {
-            let t = try await api.createTask(listId: listId, name: name, assignee: userId)
+            let t = try await api.createTask(listId: createListId, name: name, assignee: userId)
             withAnimation { tasks.insert(t, at: 0) }
-            _ = await statuses(for: listId)
+            _ = await statuses(for: createListId)
         } catch {
             errorMessage = error.localizedDescription
         }
