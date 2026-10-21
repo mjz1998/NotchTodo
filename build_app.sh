@@ -1,11 +1,12 @@
 #!/bin/bash
-# 编译通用二进制（Apple 芯片 + Intel）并打包为 NotchTodo.app 和 NotchTodo.zip
+# 编译并打包为 NotchTodo.app 和 NotchTodo.zip
 set -e
 cd "$(dirname "$0")"
 VERSION="${1:-1.0.0}"
 
-swift build -c release --arch arm64 --arch x86_64
-BIN=".build/apple/Products/Release/NotchTodo"
+swift build -c release
+BIN="$(swift build -c release --show-bin-path)/NotchTodo"
+[ -f "$BIN" ] || { echo "❌ 找不到编译产物：$BIN"; exit 1; }
 
 APP="NotchTodo.app"
 rm -rf "$APP" NotchTodo.zip
@@ -33,4 +34,3 @@ PLIST
 codesign --force --deep -s - "$APP"
 ditto -c -k --keepParent "$APP" NotchTodo.zip
 echo "✅ 已生成 $APP 和 NotchTodo.zip（版本 $VERSION）"
-lipo -info "$APP/Contents/MacOS/NotchTodo"
