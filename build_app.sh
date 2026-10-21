@@ -1,13 +1,16 @@
 #!/bin/bash
-# 编译并打包成 NotchTodo.app（可拖到「应用程序」并设为登录启动）
+# 编译通用二进制（Apple 芯片 + Intel）并打包为 NotchTodo.app 和 NotchTodo.zip
 set -e
 cd "$(dirname "$0")"
-swift build -c release
+VERSION="${1:-1.0.0}"
+
+swift build -c release --arch arm64 --arch x86_64
+BIN=".build/apple/Products/Release/NotchTodo"
 
 APP="NotchTodo.app"
-rm -rf "$APP"
+rm -rf "$APP" NotchTodo.zip
 mkdir -p "$APP/Contents/MacOS"
-cp .build/release/NotchTodo "$APP/Contents/MacOS/NotchTodo"
+cp "$BIN" "$APP/Contents/MacOS/NotchTodo"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -18,8 +21,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>com.majunze.NotchTodo</string>
   <key>CFBundleExecutable</key><string>NotchTodo</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
@@ -27,5 +30,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep -s - "$APP"   # 本地 ad-hoc 签名
-echo "✅ 已生成 $(pwd)/$APP"
+codesign --force --deep -s - "$APP"
+ditto -c -k --keepParent "$APP" NotchTodo.zip
+echo "✅ 已生成 $APP 和 NotchTodo.zip（版本 $VERSION）"
+lipo -info "$APP/Contents/MacOS/NotchTodo"
